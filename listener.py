@@ -1,38 +1,66 @@
-def scan_blocks(chain, start_block, end_block, contract_address, eventfile='deposit_logs.csv'):
+import web3
+from web3 import Web3
+from web3.providers.rpc import HTTPProvider
+from web3.middleware import ExtraDataToPOAMiddleware
+from pathlib import Path
+import json
+import pandas as pd
+
+
+def scanBlocks(chain, start_block, end_block, contract_address, eventfile='deposit_logs.csv'):
+    """
+    chain - string (Either 'bsc' or 'avax')
+    start_block - integer first block to scan
+    end_block - integer last block to scan
+    contract_address - the address of the deployed contract
+
+    This function reads "Deposit" events from the specified contract,
+    and writes information about the events to the file "deposit_logs.csv"
+    """
 
     if chain == 'avax':
-        api_url = f"https://api.avax-test.network/ext/bc/C/rpc"
+        api_url = "https://api.avax-test.network/ext/bc/C/rpc"
 
-    if chain == 'bsc':
-        api_url = f"https://data-seed-prebsc-1-s1.binance.org:8545/"
+    elif chain == 'bsc':
+        api_url = "https://data-seed-prebsc-1-s1.binance.org:8545/"
 
-    if chain in ['avax','bsc']:
-        w3 = Web3(Web3.HTTPProvider(api_url))
-        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     else:
-        w3 = Web3(Web3.HTTPProvider(api_url))
+        raise ValueError("chain must be either 'avax' or 'bsc'")
+
+    w3 = Web3(HTTPProvider(api_url))
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
     contract_address = Web3.to_checksum_address(contract_address)
 
-    DEPOSIT_ABI = json.loads('[ { "anonymous": false, "inputs": [ { "indexed": true, "internalType": "address", "name": "token", "type": "address" }, { "indexed": true, "internalType": "address", "name": "recipient", "type": "address" }, { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" } ], "name": "Deposit", "type": "event" }]')
+    DEPOSIT_ABI = json.loads(
+        '[{"anonymous": false, "inputs": ['
+        '{"indexed": true, "internalType": "address", "name": "token", "type": "address"},'
+        '{"indexed": true, "internalType": "address", "name": "recipient", "type": "address"},'
+        '{"indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256"}'
+        '], "name": "Deposit", "type": "event"}]'
+    )
 
     contract = w3.eth.contract(address=contract_address, abi=DEPOSIT_ABI)
 
     arg_filter = {}
 
     if start_block == "latest":
-        start_block = w3.eth.get_block_number()
+        start_block = w3.eth.block_number
     if end_block == "latest":
-        end_block = w3.eth.get_block_number()
+        end_block = w3.eth.block_number
 
     if end_block < start_block:
-        print(f"Error end_block < start_block!")
+        print("Error end_block < start_block!")
+        print(f"end_block = {end_block}")
+        print(f"start_block = {start_block}")
         return
 
     if start_block == end_block:
         print(f"Scanning block {start_block} on {chain}")
     else:
         print(f"Scanning blocks {start_block} - {end_block} on {chain}")
+
+    rows = []
 
     if end_block - start_block < 30:
         event_filter = contract.events.Deposit.create_filter(
@@ -42,7 +70,6 @@ def scan_blocks(chain, start_block, end_block, contract_address, eventfile='depo
         )
         events = event_filter.get_all_entries()
 
-        rows = []
         for evt in events:
             row = {
                 "chain": chain,
@@ -53,14 +80,6 @@ def scan_blocks(chain, start_block, end_block, contract_address, eventfile='depo
                 "address": evt.address
             }
             rows.append(row)
-
-        if len(rows) > 0:
-            df = pd.DataFrame(rows)
-
-            if Path(eventfile).exists():
-                df.to_csv(eventfile, mode='a', header=False, index=False)
-            else:
-                df.to_csv(eventfile, index=False)
 
     else:
         for block_num in range(start_block, end_block + 1):
@@ -80,10 +99,17 @@ def scan_blocks(chain, start_block, end_block, contract_address, eventfile='depo
                     "transactionHash": evt.transactionHash.hex(),
                     "address": evt.address
                 }
+                rows.append(row)
 
-                df = pd.DataFrame([row])
+    df = pd.DataFrame(rows, columns=[
+        "chain",
+        "token",
+        "recipient",
+        "amount",
+        "transactionHash",
+        "address"
+    ])
 
-                if Path(eventfile).exists():
-                    df.to_csv(eventfile, mode='a', header=False, index=False)
-                else:
-                    df.to_csv(eventfile, index=False)
+    df.to_csv(eventfile, index=False)
+
+    return rows
